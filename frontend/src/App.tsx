@@ -111,9 +111,9 @@ function App() {
             <button className="clear-events-btn" onClick={clearEvents}>Clear</button>
           </div>
           <div className="events-list">
-            {recentEvents.map(event => (
+            {recentEvents.map((event, index) => (
               <div
-                key={`${event.event_id}-${event.timestamp}`}
+                key={`${event.event_id}-${index}`}
                 className={`event-item ${event.event_kind.toLowerCase()}`}
               >
                 <span className="event-time">

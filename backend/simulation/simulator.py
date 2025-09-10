@@ -324,9 +324,11 @@ class RailwaySimulator:
     def _create_event(self, event_kind: EventKind, train_id: Optional[str] = None,
                       block_id: Optional[str] = None, note: str = "") -> EventMessage:
         self.event_counter += 1
+        # Use timestamp + counter for guaranteed uniqueness
+        timestamp_str = iso(self.sim_time).replace(':', '').replace('-', '').replace('T', '').split('.')[0]
         return EventMessage(
             type="event",
-            event_id=f"E{self.tick_count}-{self.event_counter}",
+            event_id=f"E{timestamp_str}-{self.event_counter}",
             event_kind=event_kind,
             train_id=train_id,
             block_id=block_id,
@@ -393,3 +395,34 @@ class RailwaySimulator:
             self.energy_stop_penalty = max(0.0, float(control.energy_stop_penalty))
         if control.simulation_speed is not None:
             self.simulation_speed = float(max(0.1, min(10.0, control.simulation_speed)))
+
+    def inject_delay(self, train_id: str, delay_minutes: int) -> EventMessage:
+        """Inject delay into a specific train"""
+        if train_id not in self.trains:
+            raise ValueError(f"Train {train_id} not found")
+        
+        train = self.trains[train_id]
+        train.delay_minutes += delay_minutes
+        
+        return self._create_event(
+            EventKind.DELAY_INJECTED,
+            train_id=train_id,
+            note=f"Added {delay_minutes} min delay to {train.name}"
+        )
+
+    def set_block_issue(self, block_id: str, blocked: bool) -> EventMessage:
+        """Set block issue (blocked/unblocked)"""
+        if block_id not in self.blocks:
+            raise ValueError(f"Block {block_id} not found")
+        
+        block = self.blocks[block_id]
+        block.has_issue = blocked
+        
+        event_kind = EventKind.BLOCK_ISSUE if blocked else EventKind.BLOCK_CLEARED
+        note = f"Block {block_id} {'blocked' if blocked else 'cleared'}"
+        
+        return self._create_event(
+            event_kind,
+            block_id=block_id,
+            note=note
+        )

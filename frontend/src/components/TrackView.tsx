@@ -70,10 +70,13 @@ export const TrackView: React.FC<TrackViewProps> = ({ state }) => {
   }, [state?.sim_time]);
 
   // rAF ticker (scoped here; parent unaffected)
-  const [, setFrameTime] = useState(0);
+  const [frameTime, setFrameTime] = useState(0);
   useEffect(() => {
     let raf = 0;
-    const tick = (t: number) => { setFrameTime(t); raf = requestAnimationFrame(tick); };
+    const tick = (t: number) => { 
+      setFrameTime(prev => prev + 1); // Just increment counter, don't use t directly
+      raf = requestAnimationFrame(tick); 
+    };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, []); // requestAnimationFrame gives 60FPS, synced to repaint for smoothness [10]
