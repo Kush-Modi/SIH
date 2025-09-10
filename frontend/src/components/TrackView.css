@@ -1,0 +1,206 @@
+/* ========== Root theme tokens (optional) ========== */
+:root {
+  --bg-panel: #f8f9fa;
+  --bg-grid-grad-a: #f8f9fa;
+  --bg-grid-grad-b: #e9ecef;
+
+  --stroke-main: #495057;
+  --stroke-loop: #6c757d;
+  --stroke-siding: #868e96;
+
+  --stroke-occupied: #28a745;
+  --stroke-issue: #dc3545;
+
+  --text-dark: #212529;
+  --text-mid: #495057;
+  --text-muted: #6c757d;
+
+  --station-fill: #6f42c1;
+  --white: #ffffff;
+
+  --halo-stroke: rgba(0,0,0,0.08);
+  --occupied-glow: rgba(40,167,69,0.35);
+
+  --shadow-soft: 0 2px 8px rgba(0,0,0,0.10);
+  --shadow-lighter: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* ========== Container ========== */
+.track-view {
+  width: 100%;
+  height: 100%;
+  background: var(--bg-panel);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative; /* container for absolute controls */
+  /* Performance containment where supported */
+  contain: layout paint style;
+}
+
+/* Containment fallback */
+@supports not (contain: layout) {
+  .track-view { /* no-op fallback */ }
+}
+
+/* ========== Controls ========== */
+.view-controls {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow-soft);
+  pointer-events: auto;
+}
+
+.control-group { display: flex; flex-direction: column; gap: 8px; }
+.control-title { font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 600; font-size: 12px; color: #495057; margin-bottom: 4px; }
+.checkbox-label { display: flex; align-items: center; gap: 6px; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.checkbox-label input { margin: 0; cursor: pointer; }
+
+/* ========== SVG Stage ========== */
+.track-svg {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, var(--bg-grid-grad-a) 0%, var(--bg-grid-grad-b) 100%);
+  shape-rendering: geometricPrecision; /* crisp path sampling & stroke joins on most browsers */
+}
+
+/* ========== Track strokes ========== */
+.block-base { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+.block-main   { stroke: var(--stroke-main);   stroke-width: 12; opacity: 0.85; }
+.block-loop   { stroke: var(--stroke-loop);   stroke-width: 8;  opacity: 0.60; }
+.block-siding { stroke: var(--stroke-siding); stroke-width: 6;  opacity: 0.50; stroke-dasharray: 6 4; }
+
+/* Overlays (drawn above base tracks) */
+.block-occupied {
+  stroke: var(--stroke-occupied);
+  stroke-width: 8;
+  opacity: 0.95;
+  filter: drop-shadow(0 0 2px var(--occupied-glow));
+}
+.block-occupied.block-loop   { stroke-width: 6; }
+.block-occupied.block-siding { stroke-width: 4; }
+
+.block-issue {
+  stroke: var(--stroke-issue);
+  stroke-width: 12;
+  stroke-dasharray: 12 8;
+  opacity: 0.95;
+}
+.block-issue.block-loop   { stroke-width: 8; }
+.block-issue.block-siding { stroke-width: 6; }
+
+/* Block labels */
+.block-label {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  fill: var(--text-mid);
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.8);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ========== Stations ========== */
+.station-group .station-node {
+  fill: var(--station-fill);
+  stroke: var(--white);
+  stroke-width: 3;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+.station-label {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 11px;
+  fill: var(--text-dark);
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.9);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ========== Trains ========== */
+/* Use group transforms only; avoid animating layout-affecting properties to keep rAF smooth */
+.train-group {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  pointer-events: none; /* allow clicks to pass to track if needed */
+  will-change: transform; /* hint compositor to keep this on GPU when moving each frame */
+}
+
+.train-halo   { fill: none; stroke: var(--halo-stroke); stroke-width: 6; }
+.train-marker { stroke: var(--white); stroke-width: 3; }
+.direction-arrow { fill: #495057; opacity: 0.85; }
+
+.train-label-bg {
+  fill: rgba(255, 255, 255, 0.95);
+  stroke: #dee2e6;
+  stroke-width: 1;
+  rx: 4;
+}
+.train-label {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 9px;
+  fill: #495057;
+  user-select: none;
+  pointer-events: none;
+}
+
+.delay-badge {
+  fill: #fff3cd;
+  stroke: #ffeaa7;
+  stroke-width: 1;
+  rx: 3;
+}
+.delay-text {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 8px;
+  fill: #856404;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Avoid unwanted transitions on frequently-updated elements */
+.train-group, .train-group * {
+  transition: none !important;
+}
+
+/* ========== Legend ========== */
+.legend-title {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  fill: #495057;
+  user-select: none;
+  pointer-events: none;
+}
+.legend-text {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 10px;
+  fill: #6c757d;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ========== Reduced Motion (accessibility) ========== */
+@media (prefers-reduced-motion: reduce) {
+  .status-indicator,
+  .train-group,
+  .block-occupied,
+  .block-issue {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ========== Responsive ========== */
+@media (max-width: 1200px) {
+  .view-controls { top: 10px; right: 10px; padding: 8px 12px; }
+  .control-title { font-size: 11px; }
+  .checkbox-label { font-size: 10px; }
+}
