@@ -9,12 +9,10 @@ class TrainPriority(str, Enum):
     REGIONAL = "REGIONAL"
     FREIGHT = "FREIGHT"
 
-
 class IssueType(str, Enum):
     BLOCKED = "BLOCKED"
     SIGNAL_FAILURE = "SIGNAL_FAILURE"
     MAINTENANCE = "MAINTENANCE"
-
 
 class EventKind(str, Enum):
     BLOCK_FAILED = "BLOCK_FAILED"
@@ -22,8 +20,7 @@ class EventKind(str, Enum):
     DELAY_INJECTED = "DELAY_INJECTED"
     TRAIN_ARRIVED = "TRAIN_ARRIVED"
     TRAIN_DEPARTED = "TRAIN_DEPARTED"
-    SIMULATION_COMPLETED = "SIMULATION_COMPLETED"  # new: one-shot completion signal
-
+    SIMULATION_COMPLETED = "SIMULATION_COMPLETED"  # one-shot completion signal
 
 # ==== State payloads ====
 
@@ -32,12 +29,10 @@ class Issue(BaseModel):
     type: IssueType = Field(..., description="Issue type (e.g., BLOCKED)")
     since: str = Field(..., description="ISO datetime when the issue started")
 
-
 class BlockState(BaseModel):
     id: str
     occupied_by: Optional[str] = Field(None, description="Train ID occupying the block (if any)")
     issue: Optional[Issue] = Field(None, description="Issue attached to this block")
-
 
 class TrainState(BaseModel):
     id: str
@@ -55,7 +50,6 @@ class TrainState(BaseModel):
     dwell_sec_remaining: int = Field(0, ge=0, description="Remaining dwell time in seconds")
     speed_kmh: float = Field(80.0, ge=0, description="Nominal speed used for travel-time estimation")
 
-
 class KPIMetrics(BaseModel):
     avg_delay_min: float
     trains_on_line: int
@@ -63,16 +57,14 @@ class KPIMetrics(BaseModel):
     conflicts_resolved: int = 0
     energy_efficiency: float = 0.0
 
-
 class StateMessage(BaseModel):
     type: Literal["state"] = "state"
     sim_time: str  # ISO datetime
     blocks: List[BlockState]
     trains: List[TrainState]
     kpis: KPIMetrics
-    # New: status to mark lifecycle end; optional and backward-compatible
+    # Mark lifecycle end; optional and backward-compatible
     status: Optional[Literal["RUNNING", "COMPLETED"]] = "RUNNING"
-
 
 # ==== Event payloads ====
 
@@ -85,7 +77,6 @@ class EventMessage(BaseModel):
     timestamp: str  # ISO datetime
     note: str
 
-
 # ==== Control payloads ====
 
 class ControlPayload(BaseModel):
@@ -94,16 +85,13 @@ class ControlPayload(BaseModel):
     energy_stop_penalty: Optional[float] = Field(None, ge=0.0, description="Weight for energy-aware objectives")
     simulation_speed: Optional[float] = Field(None, gt=0.0, description="Time multiplier for the simulator clock")
 
-
 class DelayInjection(BaseModel):
     train_id: str
     delay_minutes: int = Field(..., ge=1, le=60)
 
-
 class BlockIssueInjection(BaseModel):
     block_id: str
     blocked: bool
-
 
 # ==== Topology ====
 
@@ -112,12 +100,10 @@ class Platform(BaseModel):
     name: str
     capacity: int = Field(1, ge=1)
 
-
 class Station(BaseModel):
     id: str
     name: str
     platforms: List[Platform]
-
 
 class Block(BaseModel):
     id: str
@@ -127,7 +113,6 @@ class Block(BaseModel):
     adjacent_blocks: List[str]
     station_id: Optional[str] = None
     platform_id: Optional[str] = None
-
 
 class RailwayTopology(BaseModel):
     stations: List[Station]

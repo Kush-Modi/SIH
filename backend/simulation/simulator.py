@@ -324,8 +324,8 @@ class RailwaySimulator:
     def _create_event(self, event_kind: EventKind, train_id: Optional[str] = None,
                       block_id: Optional[str] = None, note: str = "") -> EventMessage:
         self.event_counter += 1
-        # Use timestamp + counter for guaranteed uniqueness
-        timestamp_str = iso(self.sim_time).replace(':', '').replace('-', '').replace('T', '').split('.')[0]
+        # Use timestamp + counter for uniqueness
+        timestamp_str = iso(self.sim_time).replace(':', '').replace('-', '').replace('T', '').split('.')
         return EventMessage(
             type="event",
             event_id=f"E{timestamp_str}-{self.event_counter}",
@@ -400,10 +400,8 @@ class RailwaySimulator:
         """Inject delay into a specific train"""
         if train_id not in self.trains:
             raise ValueError(f"Train {train_id} not found")
-        
         train = self.trains[train_id]
-        train.delay_minutes += delay_minutes
-        
+        train.delay_minutes += max(0, int(delay_minutes))
         return self._create_event(
             EventKind.DELAY_INJECTED,
             train_id=train_id,
@@ -414,13 +412,21 @@ class RailwaySimulator:
         """Set block issue (blocked/unblocked)"""
         if block_id not in self.blocks:
             raise ValueError(f"Block {block_id} not found")
-        
+
         block = self.blocks[block_id]
-        block.has_issue = blocked
-        
-        event_kind = EventKind.BLOCK_ISSUE if blocked else EventKind.BLOCK_CLEARED
-        note = f"Block {block_id} {'blocked' if blocked else 'cleared'}"
-        
+        if blocked:
+            # Set block issue
+            block.issue = {"type": "BLOCKED", "since": iso(self.sim_time)}
+            block.issue_since = self.sim_time
+            event_kind = EventKind.BLOCK_FAILED
+            note = f"Block {block_id} blocked"
+        else:
+            # Clear block issue
+            block.issue = None
+            block.issue_since = None
+            event_kind = EventKind.BLOCK_CLEARED
+            note = f"Block {block_id} cleared"
+
         return self._create_event(
             event_kind,
             block_id=block_id,
