@@ -1,0 +1,151 @@
+{
+  "stations": [
+    {
+      "id": "S1",
+      "name": "Central Station",
+      "platforms": [
+        { "id": "P1A", "name": "Platform 1A", "capacity": 1 },
+        { "id": "P1B", "name": "Platform 1B", "capacity": 1 }
+      ]
+    },
+    {
+      "id": "S2",
+      "name": "North Junction",
+      "platforms": [
+        { "id": "P2A", "name": "Platform 2A", "capacity": 1 }
+      ]
+    },
+    {
+      "id": "S3",
+      "name": "Industrial Zone",
+      "platforms": [
+        { "id": "P3A", "name": "Platform 3A", "capacity": 1 }
+      ]
+    },
+    {
+      "id": "S4",
+      "name": "South Junction",
+      "platforms": [
+        { "id": "P4A", "name": "Platform 4A", "capacity": 1 }
+      ]
+    },
+    {
+      "id": "S5",
+      "name": "Port Terminal",
+      "platforms": [
+        { "id": "P5A", "name": "Platform 5A", "capacity": 1 }
+      ]
+    },
+    {
+      "id": "S6",
+      "name": "Maintenance Depot",
+      "platforms": [
+        { "id": "P6A", "name": "Platform 6A", "capacity": 1 }
+      ]
+    }
+  ],
+  "blocks": [
+    {
+      "id": "B1",
+      "name": "Central to North",
+      "length_km": 2.2,
+      "max_speed_kmh": 120,
+      "adjacent_blocks": ["B2", "B7"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B2",
+      "name": "North Junction",
+      "length_km": 0.8,
+      "max_speed_kmh": 60,
+      "adjacent_blocks": ["B1", "B3", "B8"],
+      "station_id": "S2",
+      "platform_id": "P2A"
+    },
+    {
+      "id": "B3",
+      "name": "North to Industrial",
+      "length_km": 2.2,
+      "max_speed_kmh": 120,
+      "adjacent_blocks": ["B2", "B4", "B11"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B4",
+      "name": "Industrial Zone",
+      "length_km": 1.0,
+      "max_speed_kmh": 40,
+      "adjacent_blocks": ["B3", "B5"],
+      "station_id": "S3",
+      "platform_id": "P3A"
+    },
+    {
+      "id": "B5",
+      "name": "Industrial to South",
+      "length_km": 2.2,
+      "max_speed_kmh": 120,
+      "adjacent_blocks": ["B4", "B6", "B10"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B6",
+      "name": "South Junction",
+      "length_km": 0.8,
+      "max_speed_kmh": 60,
+      "adjacent_blocks": ["B5", "B7", "B9"],
+      "station_id": "S4",
+      "platform_id": "P4A"
+    },
+    {
+      "id": "B7",
+      "name": "South to Central",
+      "length_km": 2.2,
+      "max_speed_kmh": 120,
+      "adjacent_blocks": ["B6", "B1"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B8",
+      "name": "North Loop",
+      "length_km": 1.8,
+      "max_speed_kmh": 70,
+      "adjacent_blocks": ["B2", "B9"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B9",
+      "name": "South Loop",
+      "length_km": 1.8,
+      "max_speed_kmh": 70,
+      "adjacent_blocks": ["B6", "B8"],
+      "station_id": null,
+      "platform_id": null
+    },
+    {
+      "id": "B10",
+      "name": "Port Siding",
+      "length_km": 1.2,
+      "max_speed_kmh": 40,
+      "adjacent_blocks": ["B5"],
+      "station_id": "S5",
+      "platform_id": "P5A"
+    },
+    {
+      "id": "B11",
+      "name": "Depot Siding",
+      "length_km": 1.0,
+      "max_speed_kmh": 30,
+      "adjacent_blocks": ["B3"],
+      "station_id": "S6",
+      "platform_id": "P6A"
+    }
+  ],
+  "default_headway_sec": 90,
+  "default_dwell_sec": 45,
+  "default_speed_kmh": 90.0
+}
