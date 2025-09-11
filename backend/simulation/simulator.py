@@ -1,19 +1,37 @@
+from __future__ import annotations
+
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .schemas import (
     StateMessage, EventMessage, TrainState, BlockState, KPIMetrics,
     TrainPriority, EventKind, RailwayTopology, ControlPayload
 )
+from .plan import Plan
 
-ISO = "%Y-%m-%dT%H:%M:%S.%fZ"
+# ISO format: we will print milliseconds (3 digits) and a trailing 'Z'
+ISO_BASE = "%Y-%m-%dT%H:%M:%S"
+
 
 def iso(dt: datetime) -> str:
-    # Always emit Z time with milliseconds for smooth client-side interpolation
-    return (dt if dt.tzinfo is None else dt.astimezone(tz=None)).strftime(ISO)
+    """
+    Always emit Z time with milliseconds for smooth client-side interpolation.
+    Produces format like: 2025-09-11T12:34:56.123Z
+    """
+    if dt is None:
+        raise ValueError("iso() requires a datetime, got None")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    # Build string with millisecond precision
+    base = dt.strftime(ISO_BASE)
+    ms = dt.microsecond // 1000
+    return f"{base}.{ms:03d}Z"
+
 
 # -------------------- Domain models --------------------
 
@@ -33,6 +51,7 @@ class Train:
     will_exit_at: Optional[datetime] = None
     waiting_sec: float = 0.0   # accumulated wait converts to delay
 
+
 @dataclass
 class Block:
     id: str
@@ -47,19 +66,25 @@ class Block:
     issue_since: Optional[datetime] = None
     last_exit_time: Optional[datetime] = None  # for headway enforcement
 
+
 # -------------------- Simulator --------------------
 
 class RailwaySimulator:
     """
     Discrete-time railway simulator with per-block headway, station dwell,
-    and frontend-friendly timing for smooth animation along the schematic.
+    offset-based plan holds, and clean completion signaling for batch A/B runs.
     """
 
-    def __init__(self):
+    def __init__(self, seed: Optional[int] = None):
+        # Optional seed for deterministic demos / reproducible A/B runs
+        self._seed = seed
+        if seed is not None:
+            random.seed(seed)
+
         self.topology: Optional[RailwayTopology] = None
         self.blocks: Dict[str, Block] = {}
         self.trains: Dict[str, Train] = {}
-        self.sim_time = datetime.utcnow()
+        self.sim_time = datetime.now(timezone.utc)
         self.tick_count = 0
 
         # Tunables (can be updated through control API)
@@ -76,9 +101,19 @@ class RailwaySimulator:
         self.completed: bool = False          # true once all trains finish
         self._completion_emitted: bool = False
 
+        # Idle safety to prevent stalling forever
+        self._moved_this_tick: bool = False
+        self._idle_ticks: int = 0
+        self._idle_limit: int = 200           # ticks with no movement before forced completion
+
         # Events
         self.event_counter = 0
         self.recent_events: List[EventMessage] = []
+
+        # Optimization plan (offset holds)
+        self.active_plan: Optional[Plan] = None
+        # key "train_id|block_id" -> absolute datetime
+        self.holds_index: Dict[str, datetime] = {}
 
     # --------------- Lifecycle ---------------
 
@@ -91,15 +126,20 @@ class RailwaySimulator:
         topology_path = os.path.join(current_dir, "topology.json")
         with open(topology_path, "r") as f:
             topology_data = json.load(f)
+        # Construct typed topology (may raise if schema mismatches)
         self.topology = RailwayTopology(**topology_data)
 
         # Reset clocks/counters
-        self.sim_time = datetime.utcnow()
+        self.sim_time = datetime.now(timezone.utc)
         self.tick_count = 0
         self.event_counter = 0
         self.recent_events.clear()
         self.completed = False
         self._completion_emitted = False
+        self._moved_this_tick = False
+        self._idle_ticks = 0
+        self.active_plan = None
+        self.holds_index.clear()
 
         # Load blocks
         self.blocks = {}
@@ -108,15 +148,15 @@ class RailwaySimulator:
                 raise ValueError(f"Block.id must be string, got {type(b.id)}: {b.id!r}")
             self.blocks[b.id] = Block(
                 id=b.id,
-                name=b.name,
-                length_km=b.length_km,
-                max_speed_kmh=b.max_speed_kmh,
-                adjacent_blocks=list(b.adjacent_blocks),
-                station_id=b.station_id,
-                platform_id=b.platform_id,
+                name=getattr(b, "name", str(b.id)),
+                length_km=float(getattr(b, "length_km", 1.0)),
+                max_speed_kmh=float(getattr(b, "max_speed_kmh", 80.0)),
+                adjacent_blocks=list(getattr(b, "adjacent_blocks", [])),
+                station_id=getattr(b, "station_id", None),
+                platform_id=getattr(b, "platform_id", None),
             )
 
-        # Parameters from topology defaults
+        # Parameters from topology defaults (fall back to existing simulator defaults)
         self.headway_sec = int(getattr(self.topology, "default_headway_sec", self.headway_sec))
         self.dwell_sec = int(getattr(self.topology, "default_dwell_sec", self.dwell_sec))
 
@@ -130,27 +170,46 @@ class RailwaySimulator:
 
     def _flatten_route(self, route) -> List[str]:
         flat: List[str] = []
+
         def walk(x):
             if isinstance(x, (list, tuple)):
                 for y in x:
                     walk(y)
             else:
-                s = str(x).strip()
+                # Accept objects that have an 'id' attribute or plain strings
+                if hasattr(x, "id"):
+                    s = str(getattr(x, "id"))
+                else:
+                    s = str(x).strip()
                 if s:
                     flat.append(s)
+
         walk(route)
         return flat
 
-    def _priority_speed(self, pr: TrainPriority) -> float:
-        return 100.0 if pr == TrainPriority.EXPRESS else (70.0 if pr == TrainPriority.REGIONAL else 60.0)
+    def _priority_speed(self, pr) -> float:
+        # Accept TrainPriority enum or string
+        name = None
+        if hasattr(pr, "name"):
+            name = pr.name
+        else:
+            name = str(pr)
+        name = name.upper()
+        if name == "EXPRESS":
+            return 100.0
+        if name == "REGIONAL":
+            return 70.0
+        return 60.0
 
     def _block_travel_seconds(self, train: Train, block_id: str) -> float:
         b = self.blocks[block_id]
         if b.station_id:
-            return 0.0  # dwell governs at stations
+            # travel seconds don't govern station dwell (handled separately)
+            return 0.0
         speed = min(train.speed_kmh, max(b.max_speed_kmh, 1.0))
         travel = (b.length_km / max(speed, 1e-6)) * 3600.0
-        return max(1.0, min(travel, float(self.max_block_travel_sec)))  # cap to keep motion visible
+        # keep motion visible in demos and don't allow zero
+        return max(1.0, min(travel, float(self.max_block_travel_sec)))
 
     def _compute_will_exit(self, train: Train, block_id: str, enter: datetime) -> datetime:
         if self.blocks[block_id].station_id:
@@ -167,9 +226,10 @@ class RailwaySimulator:
                 return False
         return True
 
-    # --------------- Seeding ---------------
+    # --------------- Seeding / train init ---------------
 
     def _initialize_trains(self):
+        # Example seeded train configs — keep these as your demo dataset
         train_configs = [
             {"id": "T1", "name": "EXP-12001", "priority": TrainPriority.EXPRESS,  "route": ["B1", "B2", "B3", "B4", "B5", "B6", "B7"]},
             {"id": "T2", "name": "REG-22002", "priority": TrainPriority.REGIONAL, "route": ["B7", "B6", "B5", "B4", "B3", "B2", "B1"]},
@@ -190,16 +250,23 @@ class RailwaySimulator:
             route = self._flatten_route(cfg["route"])
             if not route:
                 raise ValueError(f"Train {cfg['id']} has empty/invalid route: {cfg['route']!r}")
+
             missing = [bid for bid in route if bid not in self.blocks]
             if missing:
                 raise ValueError(f"Train {cfg['id']} route unknown blocks: {missing}. Known: {list(self.blocks.keys())}")
 
-            # Try to deconflict starting placement: first free block along route
+            # Try to deconflict starting placement: first free block along the entire route
             start_index = 0
-            for i, bid in enumerate(route[:3]):
+            found_free = False
+            for i, bid in enumerate(route):
                 if self.blocks[bid].occupied_by is None:
                     start_index = i
+                    found_free = True
                     break
+
+            if not found_free:
+                # No free block found — warn and fall back to index 0 (keeps demo runnable)
+                print(f"Warning: no free start block for train {cfg['id']}; placing at route[0] = {route[0]} (may overlap)")
 
             start_block = route[start_index]
             priority = cfg["priority"]
@@ -214,7 +281,7 @@ class RailwaySimulator:
                 speed_kmh=speed,
             )
 
-            # Stagger entry for variety
+            # Stagger entry for variety (seeded by caller for reproducibility)
             enter_offset = random.randint(0, 40)
             t.entered_block_at = self.sim_time - timedelta(seconds=enter_offset)
             t.will_exit_at = self._compute_will_exit(t, start_block, t.entered_block_at)
@@ -222,6 +289,7 @@ class RailwaySimulator:
             t.delay_minutes = random.randint(0, 2)
 
             self.trains[t.id] = t
+            # Mark block as occupied (even if this overwrites — we warned above)
             self.blocks[start_block].occupied_by = t.id
 
     # --------------- Step ---------------
@@ -236,18 +304,32 @@ class RailwaySimulator:
         self.sim_time += timedelta(seconds=self.base_tick_sec * float(self.simulation_speed))
         events: List[EventMessage] = []
 
-        for train in self.trains.values():
+        # Movement tracking for idle detection
+        self._moved_this_tick = False
+
+        # iterate over snapshot copy since trains dict is mutated inside
+        for train in list(self.trains.values()):
             events.extend(self._process_train(train))
 
-        # Completion check and one-shot event
+        # Idle/Completion checks
+        if self._moved_this_tick:
+            self._idle_ticks = 0
+        else:
+            self._idle_ticks += 1
+            # Safety fuse: if nothing moves for many ticks, end the run
+            if self._idle_ticks >= self._idle_limit:
+                self.completed = True
+
         if not self.completed and self._is_completed():
             self.completed = True
-            if not self._completion_emitted:
-                events.append(self._create_event(
-                    EventKind.SIMULATION_COMPLETED,
-                    note="All trains reached their final blocks"
-                ))
-                self._completion_emitted = True
+
+        # Emit one-shot completion event
+        if self.completed and not self._completion_emitted:
+            events.append(self._create_event(
+                EventKind.SIMULATION_COMPLETED,
+                note="All trains reached their final blocks"
+            ))
+            self._completion_emitted = True
 
         return events
 
@@ -271,6 +353,20 @@ class RailwaySimulator:
             return events
 
         next_block_id = train.route[train.route_index + 1]
+
+        # Plan hold gating: key by train_id|block_id
+        if self.active_plan:
+            hold_key = f"{train.id}|{next_block_id}"
+            hold_until = self.holds_index.get(hold_key)
+            if hold_until is not None and self.sim_time < hold_until:
+                # Treat like any wait (similar to headway)
+                train.waiting_sec += self.base_tick_sec * float(self.simulation_speed)
+                if train.waiting_sec >= 60.0:
+                    inc = int(train.waiting_sec // 60.0)
+                    train.delay_minutes += inc
+                    train.waiting_sec -= 60.0 * inc
+                return events
+
         if not self._can_enter_next_block(next_block_id):
             # Accumulate waiting; convert to delay minutes periodically
             train.waiting_sec += self.base_tick_sec * float(self.simulation_speed)
@@ -300,6 +396,9 @@ class RailwaySimulator:
         train.next_block = train.route[train.route_index + 1] if train.route_index < len(train.route) - 1 else None
         train.waiting_sec = 0.0
 
+        # Mark movement for idle detection
+        self._moved_this_tick = True
+
         if nxt.station_id:
             events.append(self._create_event(
                 EventKind.TRAIN_ARRIVED,
@@ -321,11 +420,17 @@ class RailwaySimulator:
 
     # --------------- Events & State ---------------
 
-    def _create_event(self, event_kind: EventKind, train_id: Optional[str] = None,
-                      block_id: Optional[str] = None, note: str = "") -> EventMessage:
+    def _create_event(
+        self,
+        event_kind: EventKind,
+        train_id: Optional[str] = None,
+        block_id: Optional[str] = None,
+        note: str = ""
+    ) -> EventMessage:
         self.event_counter += 1
-        # Use timestamp + counter for uniqueness
-        timestamp_str = iso(self.sim_time).replace(':', '').replace('-', '').replace('T', '').split('.')
+        # Build a compact unique id: EYYYYMMDDHHMMSSmmm-ctr
+        ts = self.sim_time.astimezone(timezone.utc)
+        timestamp_str = ts.strftime("%Y%m%d%H%M%S%f")[:-3]  # trim to milliseconds
         return EventMessage(
             type="event",
             event_id=f"E{timestamp_str}-{self.event_counter}",
@@ -415,13 +520,11 @@ class RailwaySimulator:
 
         block = self.blocks[block_id]
         if blocked:
-            # Set block issue
             block.issue = {"type": "BLOCKED", "since": iso(self.sim_time)}
             block.issue_since = self.sim_time
             event_kind = EventKind.BLOCK_FAILED
             note = f"Block {block_id} blocked"
         else:
-            # Clear block issue
             block.issue = None
             block.issue_since = None
             event_kind = EventKind.BLOCK_CLEARED
@@ -432,3 +535,28 @@ class RailwaySimulator:
             block_id=block_id,
             note=note
         )
+
+    # --------------- Plans ---------------
+
+    def apply_plan(self, plan: Plan):
+        """
+        Apply offset-based holds by anchoring them to the current sim_time.
+        Use string key "train|block" for quick lookup at the gate.
+        """
+        self.active_plan = plan
+        self.holds_index.clear()
+        if plan and plan.holds:
+            base = self.sim_time
+            for h in plan.holds:
+                try:
+                    offset = int(h.not_before_offset_sec)
+                except Exception:
+                    # skip malformed holds
+                    continue
+                key = f"{h.train_id}|{h.block_id}"
+                # anchor offsets as absolute datetimes
+                self.holds_index[key] = base + timedelta(seconds=offset)
+
+    def clear_plan(self):
+        self.active_plan = None
+        self.holds_index.clear()

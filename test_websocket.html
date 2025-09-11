@@ -5,40 +5,100 @@
 </head>
 <body>
     <h1>WebSocket Connection Test</h1>
-    <div id="status">Connecting...</div>
+    <div id="status">Idle</div>
+    <div style="margin:8px 0;">
+      <button id="btnLocal">Connect ws://localhost:8000/ws</button>
+      <button id="btn127">Connect ws://127.0.0.1:8000/ws</button>
+      <button id="btnHost">Connect ws://<host>:8000/ws</button>
+      <button id="btnAuto">Auto‑probe</button>
+    </div>
+    <pre id="log" style="background:#f8f9fa;border:1px solid #e2e8f0;padding:8px;max-height:240px;overflow:auto;"></pre>
     <div id="messages"></div>
 
     <script>
-        const status = document.getElementById('status');
-        const messages = document.getElementById('messages');
-        
-        const ws = new WebSocket('ws://localhost:8000/ws');
-        
-        ws.onopen = function(event) {
-            status.textContent = 'Connected to WebSocket';
-            status.style.color = 'green';
-        };
-        
-        ws.onmessage = function(event) {
-            const message = JSON.parse(event.data);
-            const messageDiv = document.createElement('div');
-            messageDiv.textContent = `Received: ${message.type} at ${new Date().toLocaleTimeString()}`;
-            messages.appendChild(messageDiv);
-            
-            if (message.type === 'state') {
-                console.log('State message:', message);
-            }
-        };
-        
-        ws.onerror = function(error) {
-            status.textContent = 'WebSocket Error: ' + error;
-            status.style.color = 'red';
-        };
-        
-        ws.onclose = function(event) {
-            status.textContent = 'WebSocket Closed';
-            status.style.color = 'orange';
-        };
+        const $ = (id) => document.getElementById(id);
+        const status = $('status');
+        const log = $('log');
+        const messages = $('messages');
+
+        function addLog(line) {
+          log.textContent += `[${new Date().toLocaleTimeString()}] ${line}\n`;
+          log.scrollTop = log.scrollHeight;
+        }
+
+        function buildWsUrl(kind) {
+          const host = (window.location.hostname && window.location.hostname.length)
+            ? window.location.hostname
+            : '127.0.0.1';
+          if (kind === 'localhost') return 'ws://localhost:8000/ws';
+          if (kind === '127') return 'ws://127.0.0.1:8000/ws';
+          if (kind === 'host') return `ws://${host}:8000/ws`;
+          return 'ws://localhost:8000/ws';
+        }
+
+        function connect(url) {
+          try {
+            status.textContent = `Connecting to ${url} ...`;
+            status.style.color = '#333';
+            addLog(`Dial ${url}`);
+            const ws = new WebSocket(url);
+            ws.onopen = () => {
+              status.textContent = `Connected: ${url}`;
+              status.style.color = 'green';
+              addLog('OPEN');
+            };
+            ws.onmessage = (event) => {
+              addLog(`MSG ${event.data?.slice(0, 80)}`);
+              try {
+                const message = JSON.parse(event.data);
+                const messageDiv = document.createElement('div');
+                messageDiv.textContent = `Received: ${message.type} at ${new Date().toLocaleTimeString()}`;
+                messages.appendChild(messageDiv);
+              } catch {}
+            };
+            ws.onerror = (err) => {
+              status.textContent = `WebSocket Error (${url})`;
+              status.style.color = 'red';
+              addLog('ERROR ' + (err?.message || 'unknown'));
+            };
+            ws.onclose = (event) => {
+              status.textContent = `Closed (${event.code})`;
+              status.style.color = 'orange';
+              addLog(`CLOSE code=${event.code} reason=${event.reason}`);
+            };
+          } catch (e) {
+            addLog('Exception: ' + e);
+          }
+        }
+
+        async function probe() {
+          const host = (window.location.hostname && window.location.hostname.length)
+            ? window.location.hostname
+            : '127.0.0.1';
+          const candidates = [
+            'http://127.0.0.1:8000',
+            'http://localhost:8000',
+            `http://${host}:8000`,
+          ];
+          for (const base of candidates) {
+            try {
+              addLog('Probe ' + base + '/health');
+              const r = await fetch(base + '/health');
+              addLog('… status ' + r.status);
+              if (r.ok) {
+                const wsUrl = base.replace('http', 'ws') + '/ws';
+                connect(wsUrl);
+                return;
+              }
+            } catch {}
+          }
+          addLog('No backend reachable on 8000');
+        }
+
+        $('btnLocal').onclick = () => connect(buildWsUrl('localhost'));
+        $('btn127').onclick = () => connect(buildWsUrl('127'));
+        $('btnHost').onclick = () => connect(buildWsUrl('host'));
+        $('btnAuto').onclick = () => probe();
     </script>
 </body>
 </html>

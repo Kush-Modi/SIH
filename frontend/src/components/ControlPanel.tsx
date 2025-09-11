@@ -9,6 +9,25 @@ interface ControlPanelProps {
   onSetBlockIssue: (injection: BlockIssueInjection) => Promise<void>;
 }
 
+// Types for /rerun-optimized response (kept local to avoid breaking global types)
+type RerunTrainRow = { train_id: string; name: string; delay_min: number };
+type RerunMetrics = {
+  avg_delay_min: number;
+  trains_on_line: number;
+  duration_sec: number;
+  by_train: RerunTrainRow[];
+  by_block: { block_id: string; occupancy_sec: number }[];
+};
+type RerunDiffTrain = { train_id: string; name: string; delta_delay_min: number };
+type RerunDiff = {
+  delta_avg_delay_min: number;
+  delta_duration_sec: number;
+  trains: RerunDiffTrain[];
+  blocks: { block_id: string; delta_occupancy_sec: number }[];
+};
+type PlanIn = { holds: { train_id: string; block_id: string; not_before_offset_sec: number }[] };
+type RerunResponse = { baseline: RerunMetrics; optimized: RerunMetrics; plan: PlanIn; diff: RerunDiff };
+
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   state,
   onUpdateParameters,
@@ -31,8 +50,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   // UI state
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [rerunResult, setRerunResult] = useState<RerunResponse | null>(null);
 
-  // Helpers
   const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
   const trains = useMemo(() => {
@@ -49,7 +68,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     (showMessage as any)._t = window.setTimeout(() => setMessage(null), 3000);
   }, []);
 
-  // Handlers (stable)
+  // Handlers
   const handleUpdateParameters = useCallback(async () => {
     setLoading(true);
     try {
@@ -57,7 +76,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         headway_sec: clamp(Number(headwaySec) || 0, 0, 600),
         dwell_sec: clamp(Number(dwellSec) || 0, 0, 600),
         energy_stop_penalty: clamp(Number(energyPenalty) || 0, 0, 100),
-        simulation_speed: clamp(Number(simulationSpeed) || 1, 0.1, 10.0)
+        simulation_speed: clamp(Number(simulationSpeed) || 1, 0.1, 10.0),
       });
       showMessage('success', 'Parameters updated successfully');
     } catch {
@@ -107,9 +126,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       const resp = await fetch(`${API_BASE}/reset`, { method: 'POST' });
       if (!resp.ok) throw new Error('reset failed');
       showMessage('success', 'Simulation restarted');
-      // Optional: clear quick selections
       setSelectedTrain('');
       setSelectedBlock('');
+      setRerunResult(null);
     } catch {
       showMessage('error', 'Failed to restart simulation');
     } finally {
@@ -117,7 +136,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     }
   }, [showMessage]);
 
-  // Demo presets (optional, handy for hackathons)
+  // Presets
   const applyPresetDemo = useCallback(() => {
     setHeadwaySec(90);
     setDwellSec(45);
@@ -131,6 +150,33 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     setEnergyPenalty(0.0);
     setSimulationSpeed(1.0);
   }, []);
+
+  // Batch optimize rerun
+  const handleRerunOptimized = useCallback(async () => {
+    setLoading(true);
+    try {
+      const API_BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
+      const resp = await fetch(`${API_BASE}/rerun-optimized`, { method: 'POST' });
+      if (resp.status === 409) {
+        showMessage('info', 'Available only after simulation completes');
+        setRerunResult(null);
+        return;
+      }
+      if (!resp.ok) throw new Error('rerun failed');
+      const json: RerunResponse = await resp.json();
+      setRerunResult(json);
+      showMessage('success', 'Optimized rerun completed');
+    } catch {
+      setRerunResult(null);
+      showMessage('error', 'Optimization failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [showMessage]);
+
+  // Results card helpers
+  const holdsCount = rerunResult?.plan?.holds?.length ?? 0;
+  const topTrains = (rerunResult?.diff?.trains ?? []).slice(0, 3);
 
   return (
     <div className="control-panel">
@@ -302,6 +348,50 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         >
           {blockAction === 'block' ? 'Block' : 'Clear'} Block
         </button>
+      </fieldset>
+
+      <fieldset className="control-section" disabled={loading}>
+        <legend>Batch Optimization</legend>
+        <div className="control-grid">
+          <button onClick={handleRerunOptimized} disabled={loading} className="btn primary">
+            Rerun (optimized)
+          </button>
+        </div>
+
+        {rerunResult && (
+          <div className="results-card" role="status" aria-live="polite">
+            <div className="results-row">
+              <span className="results-label">Avg delay</span>
+              <span className="results-value">
+                {rerunResult.baseline.avg_delay_min}m → {rerunResult.optimized.avg_delay_min}m
+                {' '}(<strong>Δ {(rerunResult.diff.delta_avg_delay_min).toFixed(1)}m</strong>)
+              </span>
+            </div>
+            <div className="results-row">
+              <span className="results-label">Duration</span>
+              <span className="results-value">
+                {rerunResult.baseline.duration_sec}s → {rerunResult.optimized.duration_sec}s
+                {' '}(<strong>Δ {Math.round(rerunResult.diff.delta_duration_sec)}s</strong>)
+              </span>
+            </div>
+            <div className="results-row">
+              <span className="results-label">Holds applied</span>
+              <span className="results-value">{holdsCount}</span>
+            </div>
+            {topTrains.length > 0 && (
+              <div className="results-sub">
+                <div className="results-subtitle">Top trains improved</div>
+                <ul className="results-list">
+                  {topTrains.map(t => (
+                    <li key={t.train_id}>
+                      {t.name}: +{t.delta_delay_min.toFixed(1)}m
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </fieldset>
     </div>
   );

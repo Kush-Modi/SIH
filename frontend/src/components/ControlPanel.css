@@ -22,9 +22,7 @@
   margin-bottom: 14px;
 }
 
-.control-section[disabled] {
-  opacity: 0.6;
-}
+.control-section[disabled] { opacity: 0.6; }
 
 .control-section legend {
   padding: 0 6px;
@@ -42,11 +40,7 @@
   margin-bottom: 12px;
 }
 
-.control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
+.control-group { display: flex; flex-direction: column; gap: 6px; }
 
 .control-label {
   color: #475569;
@@ -122,12 +116,32 @@
 .message.error   { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 .message.info    { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
 
-.help {
-  font-size: 11px;
-  color: #64748b;
+.help { font-size: 11px; color: #64748b; }
+
+/* Results card */
+.results-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 10px;
 }
 
-/* Responsive */
+.results-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: #0f172a;
+}
+
+.results-label { font-weight: 700; color: #334155; }
+.results-value { font-weight: 600; }
+
+.results-sub { margin-top: 8px; }
+.results-subtitle { font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 4px; }
+.results-list { margin: 0; padding-left: 16px; font-size: 13px; color: #0f172a; }
+
 @media (min-width: 860px) {
   .control-grid { grid-template-columns: 1fr 1fr; }
 }

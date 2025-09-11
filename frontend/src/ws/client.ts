@@ -1,8 +1,41 @@
 import useWebSocket from 'react-use-websocket';
+import { useEffect, useMemo, useState } from 'react';
 import { WebSocketMessage, ConnectionStatus } from '../types';
 
-const WS_URL = 'ws://localhost:8000/ws';
-console.log('WebSocket URL:', WS_URL);
+// Resolve a working backend base by probing /health on candidates
+async function pickBackendBase(): Promise<string> {
+  const envBase = (import.meta as any).env?.VITE_API_URL as string | undefined;
+  const host = window.location.hostname || 'localhost';
+  const candidates = [
+    envBase,
+    `http://${host}:8000`,
+    'http://127.0.0.1:8000',
+    'http://localhost:8000',
+  ].filter(Boolean) as string[];
+  for (const base of candidates) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1200);
+      const r = await fetch(base.replace(/\/$/, '') + '/health', { signal: ctrl.signal });
+      clearTimeout(t);
+      if (r.ok) return base;
+    } catch {}
+  }
+  return `http://${host}:8000`;
+}
+
+function toWsUrl(httpBase: string): string {
+  try {
+    const u = new URL(httpBase);
+    u.protocol = u.protocol.startsWith('https') ? 'wss:' : 'ws:';
+    u.pathname = '/ws';
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return 'ws://localhost:8000/ws';
+  }
+}
 
 export interface UseWebSocketClient {
   lastMessage: WebSocketMessage | null;
@@ -11,14 +44,26 @@ export interface UseWebSocketClient {
 }
 
 export function useWebSocketClient(): UseWebSocketClient {
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    pickBackendBase().then((base) => {
+      if (mounted) setWsUrl(toWsUrl(base));
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const {
     lastMessage,
     readyState,
     sendMessage: sendRawMessage,
     lastError
-  } = useWebSocket(WS_URL, {
+  } = useWebSocket(wsUrl || 'ws://localhost:8000/ws', {
     onOpen: () => {
-      console.log('WebSocket connected to:', WS_URL);
+      console.log('WebSocket connected to:', wsUrl);
     },
     onClose: (event) => {
       console.log('WebSocket disconnected:', event.code, event.reason);
@@ -27,17 +72,20 @@ export function useWebSocketClient(): UseWebSocketClient {
       console.error('WebSocket error:', error);
     },
     onMessage: (event) => {
-      console.log('WebSocket message received:', event.data);
+      // avoid log spam but keep a breadcrumb
+      try { const obj = JSON.parse(event.data); console.debug('WS frame:', obj.type || 'unknown'); } catch {}
     },
     shouldReconnect: () => true,
-    reconnectAttempts: 10,
-    reconnectInterval: 3000,
-  });
+    reconnectAttempts: 50,
+    reconnectInterval: 1500,
+    share: true,
+    retryOnError: true,
+  }, wsUrl ? true : false);
 
   const connectionStatus: ConnectionStatus = {
-    connected: readyState === 1, // WebSocket.OPEN
-    reconnecting: readyState === 2, // WebSocket.CONNECTING
-    lastError: (lastError as any)?.message || null
+    connected: readyState === 1, // OPEN
+    reconnecting: readyState === 0, // CONNECTING
+    lastError: (lastError as any)?.message || null,
   };
 
   const sendMessage = (message: any) => {
