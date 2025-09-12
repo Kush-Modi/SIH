@@ -32,9 +32,13 @@ interface ScheduleData {
 interface ScheduleInfo {
   total_trains: number;
   total_blocks: number;
-  sample_trains: any[];
-  sample_blocks: string[];
+  avg_delay_min: number;
+  trains_on_line: number;
+  sim_time: string;
+  status: string;
+  can_optimize: boolean;
 }
+
 
 const SchedulePage: React.FC = () => {
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
@@ -58,6 +62,8 @@ const SchedulePage: React.FC = () => {
       const result = await response.json();
       if (result.status === 'success') {
         setScheduleInfo(result.data);
+      } else {
+        console.error('Schedule info error:', result.error);
       }
     } catch (err) {
       console.error('Failed to fetch schedule info:', err);
@@ -67,25 +73,25 @@ const SchedulePage: React.FC = () => {
   const optimizeSchedule = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const params = new URLSearchParams({
         max_trains: optimizationParams.max_trains.toString(),
         max_time_sec: optimizationParams.max_time_sec.toString(),
         headway_sec: optimizationParams.headway_sec.toString(),
-        time_limit_sec: optimizationParams.time_limit_sec.toString()
+        time_limit_sec: optimizationParams.time_limit_sec.toString(),
       });
 
       const response = await fetch(`http://localhost:8000/optimize-schedule?${params}`, {
         method: 'POST'
       });
-      
+
       const result = await response.json();
-      
+
       if (result.status === 'success') {
         setScheduleData(result.data);
       } else {
-        setError('Optimization failed');
+        setError(result.error || 'Optimization failed');
       }
     } catch (err) {
       setError('Failed to optimize schedule');
@@ -94,6 +100,7 @@ const SchedulePage: React.FC = () => {
       setLoading(false);
     }
   };
+
 
   const formatDuration = (seconds: number): string => {
     const hours = Math.floor(seconds / 3600);
@@ -104,7 +111,7 @@ const SchedulePage: React.FC = () => {
 
   const getTotalOptimizationTime = (): string => {
     if (!scheduleData?.trains.length) return '0h 0m 0s';
-    
+
     let maxEndTime = 0;
     scheduleData.trains.forEach(train => {
       train.schedule.forEach(block => {
@@ -113,7 +120,7 @@ const SchedulePage: React.FC = () => {
         }
       });
     });
-    
+
     return formatDuration(maxEndTime);
   };
 
@@ -157,7 +164,7 @@ const SchedulePage: React.FC = () => {
               }))}
             />
           </div>
-          
+
           <div className="control-group">
             <label htmlFor="max_time_sec">Max Time Window (seconds):</label>
             <input
@@ -172,7 +179,7 @@ const SchedulePage: React.FC = () => {
               }))}
             />
           </div>
-          
+
           <div className="control-group">
             <label htmlFor="headway_sec">Headway (seconds):</label>
             <input
@@ -187,7 +194,7 @@ const SchedulePage: React.FC = () => {
               }))}
             />
           </div>
-          
+
           <div className="control-group">
             <label htmlFor="time_limit_sec">Solver Time Limit (seconds):</label>
             <input
@@ -204,8 +211,8 @@ const SchedulePage: React.FC = () => {
             />
           </div>
         </div>
-        
-        <button 
+
+        <button
           className="optimize-button"
           onClick={optimizeSchedule}
           disabled={loading}
@@ -247,11 +254,11 @@ const SchedulePage: React.FC = () => {
                 <div className="train-header">
                   <h4>Train {train.train_id}</h4>
                   <span className="train-stats">
-                    {train.schedule.length} blocks • 
+                    {train.schedule.length} blocks •
                     {formatDuration(train.schedule[train.schedule.length - 1]?.end_time_sec || 0)} total time
                   </span>
                 </div>
-                
+
                 <div className="schedule-timeline">
                   {train.schedule.map((block, index) => (
                     <div key={index} className="schedule-block">

@@ -153,9 +153,35 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()}
 
+
 @app.get("/state")
 async def get_state():
     return simulator.get_state_message().dict()
+
+# add this near the other GET endpoints (e.g. after /state)
+@app.get("/schedule-info")
+async def schedule_info():
+    """
+    Lightweight summary used by the frontend to check schedule/optimizer availability
+    and basic simulation state. This endpoint deliberately returns a compact JSON
+    so the UI can use it for quick checks without pulling the full state payload.
+    """
+    try:
+        state = simulator.get_state_message()
+        return {
+            "status": "success",
+            "data": {
+                "sim_time": state.sim_time,
+                "status": state.status or ("COMPLETED" if simulator.completed else "RUNNING"),
+                "total_trains": len(state.trains),
+                "total_blocks": len(state.blocks),
+                "avg_delay_min": state.kpis.avg_delay_min,
+                "trains_on_line": state.kpis.trains_on_line,
+                "can_optimize": bool(simulator.completed),
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 @app.post("/control")
 async def update_control(control: ControlPayload):
@@ -293,33 +319,56 @@ async def export_plan_input():
     )
     return data
 
-@app.post("/optimize_plan")
-async def optimize_plan_endpoint(seed: int = 42):
+
+@app.post("/optimize-schedule")
+async def optimize_plan_endpoint(
+    seed: int = 42,
+    max_trains: int = 20,
+    max_time_sec: int = 3600,
+    headway_sec: int = 90,
+    time_limit_sec: float = 1.5,
+):
     if not simulator.completed:
         raise HTTPException(status_code=409, detail="Optimization is only available after completion")
-    data = build_optimizer_input(simulator)
-    plan = optimize_from_sim(data, seed=seed)
-    return {
-        "holds": [
-            {"train_id": h.train_id, "block_id": h.block_id, "not_before_offset_sec": h.not_before_offset_sec}
-            for h in plan.holds
-        ]
-    }
 
-@app.post("/apply_plan")
-async def apply_plan_endpoint(plan_in: PlanIn):
-    try:
-        holds = [
-            HoldDirective(
-                train_id=h.train_id,
-                block_id=h.block_id,
-                not_before_offset_sec=int(h.not_before_offset_sec),
-            ) for h in plan_in.holds
-        ]
-        simulator.apply_plan(Plan(holds=holds))
-        return {"status": "success", "holds_applied": len(holds)}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    data = build_optimizer_input(simulator)
+    # override with frontend params
+    data["params"].update({
+        "max_time_sec": max_time_sec,
+        "headway_sec": headway_sec,
+        "time_limit_sec": time_limit_sec,
+    })
+    plan = optimize_from_sim(data, seed=seed)
+
+    # Convert plan.holds into pseudo schedule (one block per hold)
+    trains = []
+    for h in plan.holds:
+        trains.append({
+            "train_id": h.train_id,
+            "schedule": [{
+                "block_index": 0,
+                "block_id": h.block_id,
+                "block_name": f"Block {h.block_id}",
+                "start_time_sec": h.not_before_offset_sec,
+                "end_time_sec": h.not_before_offset_sec + 60,  # placeholder
+                "duration_sec": 60,
+                "start_time_formatted": f"{h.not_before_offset_sec}s",
+                "end_time_formatted": f"{h.not_before_offset_sec+60}s",
+            }]
+        })
+
+    return {
+        "status": "success",
+        "data": {
+            "optimization_params": {
+                "max_trains": max_trains,
+                "max_time_sec": max_time_sec,
+                "headway_sec": headway_sec,
+                "time_limit_sec": time_limit_sec,
+            },
+            "trains": trains
+        }
+    }
 
 @app.post("/rerun-optimized")
 async def rerun_optimized(seed: int = 42, force: bool = False):

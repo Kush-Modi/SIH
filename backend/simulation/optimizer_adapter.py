@@ -1,5 +1,7 @@
+# optimizer_adapter.py
 from __future__ import annotations
 
+import math
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
@@ -11,7 +13,6 @@ def _iso_utc(dt: datetime) -> str:
     Return ISO-8601 string in UTC with 'Z' suffix.
     """
     if dt.tzinfo is None:
-        # Explicitly assume UTC if naive datetime
         dt = dt.replace(tzinfo=timezone.utc)
     else:
         dt = dt.astimezone(timezone.utc)
@@ -48,6 +49,7 @@ def build_optimizer_input(sim: RailwaySimulator) -> Dict[str, Any]:
         else:
             priority = str(t.priority)
 
+        # route may be stored as strings already in simulator.Train
         route_ids = [blk.id if hasattr(blk, "id") else blk for blk in t.route]
 
         trains.append({
