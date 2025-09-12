@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import './SchedulePage.css';
+import { pickBackendBase } from '../ws/client';
+import { RerunResponseEnriched } from '../types';
 
 interface ScheduleBlock {
   block_index: number;
@@ -29,188 +31,139 @@ interface ScheduleData {
   trains: TrainSchedule[];
 }
 
-interface ScheduleInfo {
-  total_trains: number;
-  total_blocks: number;
-  sample_trains: any[];
-  sample_blocks: string[];
-}
-
 const SchedulePage: React.FC = () => {
-  const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
-  const [scheduleInfo, setScheduleInfo] = useState<ScheduleInfo | null>(null);
+  const [apiBase, setApiBase] = useState<string>('http://localhost:8000');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [optimizationParams, setOptimizationParams] = useState({
-    max_trains: 20,
-    max_time_sec: 3600,
-    headway_sec: 90,
-    time_limit_sec: 1.5
-  });
+
+  // Optional classic schedule payload if you later expose it
+  const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
+
+  // A/B optimize & rerun payload
+  const [rerun, setRerun] = useState<RerunResponseEnriched | null>(null);
+
+  // Controls
+  const [trials, setTrials] = useState<number>(10);
+  const [seed, setSeed] = useState<number>(42);
 
   useEffect(() => {
-    fetchScheduleInfo();
+    let mounted = true;
+    pickBackendBase().then((b) => mounted && setApiBase(b));
+    return () => { mounted = false; };
   }, []);
 
+  const formatDuration = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h}h ${m}m ${s}s`;
+  };
+
+  const getTotalOptimizationTime = (data: ScheduleData | null): string => {
+    if (!data?.trains?.length) return '0h 0m 0s';
+    let maxEndTime = 0;
+    data.trains.forEach(train => {
+      train.schedule.forEach(block => {
+        if (block.end_time_sec > maxEndTime) maxEndTime = block.end_time_sec;
+      });
+    });
+    return formatDuration(maxEndTime);
+  };
+
+  // Optional: classic schedule fetcher if/when backend adds it again
   const fetchScheduleInfo = async () => {
     try {
-      const response = await fetch('http://localhost:8000/schedule-info');
-      const result = await response.json();
+      const resp = await fetch(`${apiBase.replace(/\/$/, '')}/schedule-info`);
+      if (!resp.ok) return;
+      const result = await resp.json();
       if (result.status === 'success') {
-        setScheduleInfo(result.data);
+        // adapt to your returned shape if needed
       }
-    } catch (err) {
-      console.error('Failed to fetch schedule info:', err);
+    } catch {
+      // ignore soft
     }
   };
 
-  const optimizeSchedule = async () => {
+  useEffect(() => {
+    fetchScheduleInfo();
+  }, [apiBase]);
+
+  // Optimize & rerun using the new backend endpoint
+  const runOptimizeAndRerun = async () => {
     setLoading(true);
     setError(null);
-    
     try {
-      const params = new URLSearchParams({
-        max_trains: optimizationParams.max_trains.toString(),
-        max_time_sec: optimizationParams.max_time_sec.toString(),
-        headway_sec: optimizationParams.headway_sec.toString(),
-        time_limit_sec: optimizationParams.time_limit_sec.toString()
-      });
-
-      const response = await fetch(`http://localhost:8000/optimize-schedule?${params}`, {
-        method: 'POST'
-      });
-      
-      const result = await response.json();
-      
-      if (result.status === 'success') {
-        setScheduleData(result.data);
-      } else {
-        setError('Optimization failed');
+      const url = `${apiBase.replace(/\/$/, '')}/rerun-optimized?seed=${encodeURIComponent(seed)}&trials=${encodeURIComponent(trials)}`;
+      const resp = await fetch(url, { method: 'POST' });
+      if (resp.status === 409) {
+        setError('Rerun available only after live simulation completes');
+        setRerun(null);
+        return;
       }
-    } catch (err) {
-      setError('Failed to optimize schedule');
-      console.error('Optimization error:', err);
+      if (!resp.ok) throw new Error('rerun failed');
+      const json: RerunResponseEnriched = await resp.json();
+      setRerun(json);
+    } catch (e) {
+      setRerun(null);
+      setError('Failed to run optimizer');
     } finally {
       setLoading(false);
     }
   };
 
-  const formatDuration = (seconds: number): string => {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    return `${hours}h ${minutes}m ${secs}s`;
-  };
+  // Derived summaries from rerun
+  const baselineAvg = rerun?.baseline?.avg_delay_min ?? null;
+  const optimizedAvg = rerun?.optimized?.avg_delay_min ?? null;
+  const deltaAvg = rerun?.diff?.delta_avg_delay_min ?? null;
+  const baselineDur = rerun?.baseline?.duration_sec ?? null;
+  const optimizedDur = rerun?.optimized?.duration_sec ?? null;
+  const deltaDur = rerun?.diff?.delta_duration_sec ?? null;
+  const ciAvg = rerun?.meta?.avg_delay_min_delta_ci95 ?? null;
+  const ciDur = rerun?.meta?.duration_sec_delta_ci95 ?? null;
+  const holdsApplied = rerun?.plan?.holds?.length ?? 0;
 
-  const getTotalOptimizationTime = (): string => {
-    if (!scheduleData?.trains.length) return '0h 0m 0s';
-    
-    let maxEndTime = 0;
-    scheduleData.trains.forEach(train => {
-      train.schedule.forEach(block => {
-        if (block.end_time_sec > maxEndTime) {
-          maxEndTime = block.end_time_sec;
-        }
-      });
-    });
-    
-    return formatDuration(maxEndTime);
-  };
+  // If later you return per-train block schedules from backend, put them in scheduleData and they’ll render below
+  const hasTimeline = Boolean(scheduleData?.trains?.length);
 
   return (
     <div className="schedule-page">
       <div className="schedule-header">
         <h1>Railway Schedule Optimizer</h1>
-        <p>Optimize train schedules using real railway data and constraint programming</p>
+        <p>Optimize and compare schedules using constraint programming and paired A/B reruns</p>
       </div>
 
-      {scheduleInfo && (
-        <div className="schedule-info">
-          <h3>Available Data</h3>
-          <div className="info-grid">
-            <div className="info-item">
-              <span className="info-label">Total Trains:</span>
-              <span className="info-value">{scheduleInfo.total_trains.toLocaleString()}</span>
-            </div>
-            <div className="info-item">
-              <span className="info-label">Total Blocks:</span>
-              <span className="info-value">{scheduleInfo.total_blocks.toLocaleString()}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="optimization-controls">
-        <h3>Optimization Parameters</h3>
+        <h3>Optimize & Rerun</h3>
         <div className="controls-grid">
           <div className="control-group">
-            <label htmlFor="max_trains">Max Trains to Optimize:</label>
-            <input
-              id="max_trains"
-              type="number"
-              min="1"
-              max="100"
-              value={optimizationParams.max_trains}
-              onChange={(e) => setOptimizationParams(prev => ({
-                ...prev,
-                max_trains: parseInt(e.target.value) || 20
-              }))}
-            />
+            <label htmlFor="trials">Trials</label>
+            <select
+              id="trials"
+              value={trials}
+              onChange={(e) => setTrials(parseInt(e.target.value) || 10)}
+            >
+              {[1, 5, 10, 20].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
           </div>
-          
           <div className="control-group">
-            <label htmlFor="max_time_sec">Max Time Window (seconds):</label>
+            <label htmlFor="seed">Seed</label>
             <input
-              id="max_time_sec"
+              id="seed"
               type="number"
-              min="300"
-              max="7200"
-              value={optimizationParams.max_time_sec}
-              onChange={(e) => setOptimizationParams(prev => ({
-                ...prev,
-                max_time_sec: parseInt(e.target.value) || 3600
-              }))}
-            />
-          </div>
-          
-          <div className="control-group">
-            <label htmlFor="headway_sec">Headway (seconds):</label>
-            <input
-              id="headway_sec"
-              type="number"
-              min="30"
-              max="300"
-              value={optimizationParams.headway_sec}
-              onChange={(e) => setOptimizationParams(prev => ({
-                ...prev,
-                headway_sec: parseInt(e.target.value) || 90
-              }))}
-            />
-          </div>
-          
-          <div className="control-group">
-            <label htmlFor="time_limit_sec">Solver Time Limit (seconds):</label>
-            <input
-              id="time_limit_sec"
-              type="number"
-              min="0.5"
-              max="10"
-              step="0.5"
-              value={optimizationParams.time_limit_sec}
-              onChange={(e) => setOptimizationParams(prev => ({
-                ...prev,
-                time_limit_sec: parseFloat(e.target.value) || 1.5
-              }))}
+              inputMode="numeric"
+              value={seed}
+              onChange={(e) => setSeed(parseInt(e.target.value) || 42)}
             />
           </div>
         </div>
-        
-        <button 
+
+        <button
           className="optimize-button"
-          onClick={optimizeSchedule}
+          onClick={runOptimizeAndRerun}
           disabled={loading}
+          title="Runs paired baseline vs optimized with common random numbers"
         >
-          {loading ? 'Optimizing...' : 'Optimize Schedule'}
+          {loading ? 'Running…' : 'Optimize & Rerun'}
         </button>
       </div>
 
@@ -221,10 +174,65 @@ const SchedulePage: React.FC = () => {
         </div>
       )}
 
-      {scheduleData && (
+      {rerun && (
         <div className="schedule-results">
           <div className="results-header">
-            <h3>Optimized Schedule Results</h3>
+            <h3>Results</h3>
+            <div className="results-summary">
+              <div className="summary-item">
+                <span className="summary-label">Avg delay</span>
+                <span className="summary-value">
+                  {baselineAvg}m → {optimizedAvg}m ({deltaAvg !== null ? `Δ ${deltaAvg.toFixed(2)}m` : '—'})
+                </span>
+              </div>
+              {ciAvg && (
+                <div className="summary-item">
+                  <span className="summary-label">Avg Δ 95% CI</span>
+                  <span className="summary-value">
+                    [{ciAvg.toFixed(2)}, {ciAvg[22].toFixed(2)}] m
+                  </span>
+                </div>
+              )}
+              <div className="summary-item">
+                <span className="summary-label">Duration</span>
+                <span className="summary-value">
+                  {baselineDur}s → {optimizedDur}s ({deltaDur !== null ? `Δ ${Number(deltaDur).toFixed(0)}s` : '—'})
+                </span>
+              </div>
+              {ciDur && (
+                <div className="summary-item">
+                  <span className="summary-label">Duration Δ 95% CI</span>
+                  <span className="summary-value">
+                    [{Number(ciDur).toFixed(0)}, {Number(ciDur[22]).toFixed(0)}] s
+                  </span>
+                </div>
+              )}
+              <div className="summary-item">
+                <span className="summary-label">Holds applied</span>
+                <span className="summary-value">{holdsApplied}</span>
+              </div>
+            </div>
+          </div>
+
+          {rerun.diff?.trains?.length ? (
+            <div className="trains-list">
+              <h4>Top trains improved</h4>
+              <ul>
+                {rerun.diff.trains.slice(0, 5).map(t => (
+                  <li key={t.train_id}>
+                    {t.name}: +{t.delta_delay_min.toFixed(2)}m
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {hasTimeline && scheduleData && (
+        <div className="schedule-results">
+          <div className="results-header">
+            <h3>Optimized Schedule Timeline</h3>
             <div className="results-summary">
               <div className="summary-item">
                 <span className="summary-label">Trains Optimized:</span>
@@ -232,7 +240,7 @@ const SchedulePage: React.FC = () => {
               </div>
               <div className="summary-item">
                 <span className="summary-label">Total Schedule Time:</span>
-                <span className="summary-value">{getTotalOptimizationTime()}</span>
+                <span className="summary-value">{getTotalOptimizationTime(scheduleData)}</span>
               </div>
               <div className="summary-item">
                 <span className="summary-label">Headway:</span>
@@ -247,11 +255,11 @@ const SchedulePage: React.FC = () => {
                 <div className="train-header">
                   <h4>Train {train.train_id}</h4>
                   <span className="train-stats">
-                    {train.schedule.length} blocks • 
+                    {train.schedule.length} blocks •
                     {formatDuration(train.schedule[train.schedule.length - 1]?.end_time_sec || 0)} total time
                   </span>
                 </div>
-                
+
                 <div className="schedule-timeline">
                   {train.schedule.map((block, index) => (
                     <div key={index} className="schedule-block">

@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { StateMessage, ControlPayload, DelayInjection, BlockIssueInjection } from '../types';
 import './ControlPanel.css';
+import { pickBackendBase } from '../ws/client'; // reuse backend base resolver
 
 interface ControlPanelProps {
   state: StateMessage | null;
@@ -26,7 +27,23 @@ type RerunDiff = {
   blocks: { block_id: string; delta_occupancy_sec: number }[];
 };
 type PlanIn = { holds: { train_id: string; block_id: string; not_before_offset_sec: number }[] };
-type RerunResponse = { baseline: RerunMetrics; optimized: RerunMetrics; plan: PlanIn; diff: RerunDiff };
+
+// Enriched response: core fields + meta with trials and confidence intervals
+type RerunResponseEnriched = {
+  baseline: RerunMetrics;
+  optimized: RerunMetrics;
+  plan: PlanIn;
+  diff: RerunDiff;
+  meta?: {
+    trials: number;
+    seeds_used: number[];
+    holds_applied: number;
+    avg_delay_min_delta_mean: number;
+    avg_delay_min_delta_ci95: [number, number];
+    duration_sec_delta_mean: number;
+    duration_sec_delta_ci95: [number, number];
+  };
+};
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   state,
@@ -34,6 +51,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onInjectDelay,
   onSetBlockIssue
 }) => {
+  // Backend base (shared with WS probing logic)
+  const [apiBase, setApiBase] = useState<string>('http://localhost:8000');
+
+  useEffect(() => {
+    let mounted = true;
+    pickBackendBase().then((b) => mounted && setApiBase(b));
+    return () => { mounted = false; };
+  }, []);
+
   // Parameters
   const [headwaySec, setHeadwaySec] = useState(120);
   const [dwellSec, setDwellSec] = useState(60);
@@ -47,10 +73,14 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [selectedBlock, setSelectedBlock] = useState('');
   const [blockAction, setBlockAction] = useState<'block' | 'clear'>('block');
 
+  // Rerun controls
+  const [trials, setTrials] = useState<number>(10);
+  const [seed, setSeed] = useState<number>(42);
+
   // UI state
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
-  const [rerunResult, setRerunResult] = useState<RerunResponse | null>(null);
+  const [rerunResult, setRerunResult] = useState<RerunResponseEnriched | null>(null);
 
   const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -68,7 +98,42 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     (showMessage as any)._t = window.setTimeout(() => setMessage(null), 3000);
   }, []);
 
-  // Handlers
+  const status = state?.status ?? 'IDLE';
+  const canStart = status === 'IDLE';               // only start from IDLE
+  const canReset = true;                            // allow reset anytime
+  const canOptimize = status === 'COMPLETED';       // optimized A/B after completion
+
+  // ---------------- Handlers ----------------
+
+  const handleStart = useCallback(async () => {
+    setLoading(true);
+    try {
+      const resp = await fetch(`${apiBase.replace(/\/$/, '')}/start`, { method: 'POST' });
+      if (!resp.ok) throw new Error('start failed');
+      showMessage('success', 'Simulation started');
+    } catch {
+      showMessage('error', 'Failed to start simulation');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, showMessage]);
+
+  const handleReset = useCallback(async () => {
+    setLoading(true);
+    try {
+      const resp = await fetch(`${apiBase.replace(/\/$/, '')}/reset`, { method: 'POST' });
+      if (!resp.ok) throw new Error('reset failed');
+      showMessage('success', 'Simulation reset to IDLE');
+      setSelectedTrain('');
+      setSelectedBlock('');
+      setRerunResult(null);
+    } catch {
+      showMessage('error', 'Failed to reset simulation');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, showMessage]);
+
   const handleUpdateParameters = useCallback(async () => {
     setLoading(true);
     try {
@@ -119,23 +184,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     }
   }, [selectedBlock, blockAction, onSetBlockIssue, showMessage]);
 
-  const handleReset = useCallback(async () => {
-    setLoading(true);
-    try {
-      const API_BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-      const resp = await fetch(`${API_BASE}/reset`, { method: 'POST' });
-      if (!resp.ok) throw new Error('reset failed');
-      showMessage('success', 'Simulation restarted');
-      setSelectedTrain('');
-      setSelectedBlock('');
-      setRerunResult(null);
-    } catch {
-      showMessage('error', 'Failed to restart simulation');
-    } finally {
-      setLoading(false);
-    }
-  }, [showMessage]);
-
   // Presets
   const applyPresetDemo = useCallback(() => {
     setHeadwaySec(90);
@@ -151,32 +199,38 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     setSimulationSpeed(1.0);
   }, []);
 
-  // Batch optimize rerun
+  // Batch optimize rerun with trials and seed
   const handleRerunOptimized = useCallback(async () => {
     setLoading(true);
     try {
-      const API_BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-      const resp = await fetch(`${API_BASE}/rerun-optimized`, { method: 'POST' });
+      const base = apiBase.replace(/\/$/, '');
+      const url = `${base}/rerun-optimized?seed=${encodeURIComponent(seed)}&trials=${encodeURIComponent(trials)}`;
+      const resp = await fetch(url, { method: 'POST' });
       if (resp.status === 409) {
         showMessage('info', 'Available only after simulation completes');
         setRerunResult(null);
         return;
       }
       if (!resp.ok) throw new Error('rerun failed');
-      const json: RerunResponse = await resp.json();
+      const json: RerunResponseEnriched = await resp.json();
       setRerunResult(json);
-      showMessage('success', 'Optimized rerun completed');
+      const trialsTxt = json.meta?.trials ? ` (${json.meta.trials} trials)` : '';
+      showMessage('success', `Optimize & Rerun completed${trialsTxt}`);
     } catch {
       setRerunResult(null);
       showMessage('error', 'Optimization failed');
     } finally {
       setLoading(false);
     }
-  }, [showMessage]);
+  }, [apiBase, showMessage, seed, trials]);
 
   // Results card helpers
   const holdsCount = rerunResult?.plan?.holds?.length ?? 0;
   const topTrains = (rerunResult?.diff?.trains ?? []).slice(0, 3);
+  const ciAvg = rerunResult?.meta?.avg_delay_min_delta_ci95;
+  const ciDur = rerunResult?.meta?.duration_sec_delta_ci95;
+  const meanAvg = rerunResult?.meta?.avg_delay_min_delta_mean;
+  const meanDur = rerunResult?.meta?.duration_sec_delta_mean;
 
   return (
     <div className="control-panel">
@@ -191,11 +245,19 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       <fieldset className="control-section" disabled={loading}>
         <legend>Basics</legend>
         <div className="control-grid">
-          <button onClick={handleReset} disabled={loading} className="btn reset-button">Restart Simulation</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleStart} disabled={loading || !canStart} className="btn primary">
+              Start Simulation
+            </button>
+            <button onClick={handleReset} disabled={loading || !canReset} className="btn reset-button">
+              Reset Simulation
+            </button>
+          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={applyPresetDemo} disabled={loading} className="btn success">Demo Preset</button>
             <button onClick={applyPresetDefault} disabled={loading} className="btn">Defaults</button>
           </div>
+          <div className="status-chip" data-status={status} aria-live="polite">Status: {status}</div>
         </div>
       </fieldset>
 
@@ -353,8 +415,28 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       <fieldset className="control-section" disabled={loading}>
         <legend>Batch Optimization</legend>
         <div className="control-grid">
-          <button onClick={handleRerunOptimized} disabled={loading} className="btn primary">
-            Rerun (optimized)
+          <div className="control-group">
+            <label className="control-label">Trials</label>
+            <select value={trials} onChange={(e) => setTrials(Number(e.target.value))}>
+              {[1, 5, 10, 20].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div className="control-group">
+            <label className="control-label">Seed</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              value={seed}
+              onChange={(e) => setSeed(Number(e.target.value))}
+            />
+          </div>
+          <button
+            onClick={handleRerunOptimized}
+            disabled={loading || !canOptimize}
+            className="btn primary"
+            title={canOptimize ? 'Run optimizer and show A/B diff' : 'Available after completion'}
+          >
+            Optimize & Rerun
           </button>
         </div>
 
@@ -363,20 +445,36 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <div className="results-row">
               <span className="results-label">Avg delay</span>
               <span className="results-value">
-                {rerunResult.baseline.avg_delay_min}m → {rerunResult.optimized.avg_delay_min}m
-                {' '}(<strong>Δ {(rerunResult.diff.delta_avg_delay_min).toFixed(1)}m</strong>)
+                {rerunResult.baseline.avg_delay_min}m → {rerunResult.optimized.avg_delay_min}m{' '}
+                (<strong>Δ {rerunResult.diff.delta_avg_delay_min.toFixed(2)}m</strong>)
               </span>
             </div>
+            {meanAvg !== undefined && ciAvg && (
+              <div className="results-row">
+                <span className="results-label">Avg Δ (mean, 95% CI)</span>
+                <span className="results-value">
+                  {meanAvg.toFixed(2)}m [{ciAvg[0].toFixed(2)}, {ciAvg[1].toFixed(2)}]
+                </span>
+              </div>
+            )}
             <div className="results-row">
               <span className="results-label">Duration</span>
               <span className="results-value">
-                {rerunResult.baseline.duration_sec}s → {rerunResult.optimized.duration_sec}s
-                {' '}(<strong>Δ {Math.round(rerunResult.diff.delta_duration_sec)}s</strong>)
+                {rerunResult.baseline.duration_sec}s → {rerunResult.optimized.duration_sec}s{' '}
+                (<strong>Δ {Number(rerunResult.diff.delta_duration_sec).toFixed(0)}s</strong>)
               </span>
             </div>
+            {meanDur !== undefined && ciDur && (
+              <div className="results-row">
+                <span className="results-label">Duration Δ (mean, 95% CI)</span>
+                <span className="results-value">
+                  {meanDur.toFixed(0)}s [{Number(ciDur[0]).toFixed(0)}, {Number(ciDur[1]).toFixed(0)}]
+                </span>
+              </div>
+            )}
             <div className="results-row">
               <span className="results-label">Holds applied</span>
-              <span className="results-value">{holdsCount}</span>
+              <span className="results-value">{holdsCount} {rerunResult.meta?.holds_applied !== undefined ? `(optimizer: ${rerunResult.meta.holds_applied})` : ''}</span>
             </div>
             {topTrains.length > 0 && (
               <div className="results-sub">

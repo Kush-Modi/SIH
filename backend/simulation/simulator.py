@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import random
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
+from enum import Enum
+import random
 
 from .schemas import (
     StateMessage, EventMessage, TrainState, BlockState, KPIMetrics,
@@ -33,7 +34,14 @@ def iso(dt: datetime) -> str:
     return f"{base}.{ms:03d}Z"
 
 
+class SimulationStatus(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+
+
 # -------------------- Domain models --------------------
+
 
 @dataclass
 class Train:
@@ -69,17 +77,17 @@ class Block:
 
 # -------------------- Simulator --------------------
 
+
 class RailwaySimulator:
     """
     Discrete-time railway simulator with per-block headway, station dwell,
-    offset-based plan holds, and clean completion signaling for batch A/B runs.
+    offset-based plan holds, explicit lifecycle states, and batch A/B helpers.
     """
 
     def __init__(self, seed: Optional[int] = None):
-        # Optional seed for deterministic demos / reproducible A/B runs
-        self._seed = seed
-        if seed is not None:
-            random.seed(seed)
+        # Deterministic per-instance RNG for reproducible demos / A/B runs
+        self._seed: Optional[int] = seed
+        self._rng: random.Random = random.Random(seed)
 
         self.topology: Optional[RailwayTopology] = None
         self.blocks: Dict[str, Block] = {}
@@ -98,6 +106,7 @@ class RailwaySimulator:
         self.max_block_travel_sec: int = 45
 
         # Lifecycle
+        self.status: SimulationStatus = SimulationStatus.IDLE
         self.completed: bool = False          # true once all trains finish
         self._completion_emitted: bool = False
 
@@ -118,9 +127,24 @@ class RailwaySimulator:
     # --------------- Lifecycle ---------------
 
     async def initialize(self):
+        # Initialize to a clean IDLE state; do not auto-start
         self.reset()
 
+    def start(self):
+        """
+        Transition from IDLE to RUNNING; if already COMPLETED, require reset first.
+        """
+        if self.status == SimulationStatus.COMPLETED:
+            # Reset required before starting a new live run
+            return
+        if self.status != SimulationStatus.RUNNING:
+            self.status = SimulationStatus.RUNNING
+
     def reset(self):
+        """
+        Full reset to IDLE. Loads topology and trains, clears plans/events/counters.
+        Does not start automatically.
+        """
         import os
         current_dir = os.path.dirname(os.path.abspath(__file__))
         topology_path = os.path.join(current_dir, "topology.json")
@@ -140,6 +164,9 @@ class RailwaySimulator:
         self._idle_ticks = 0
         self.active_plan = None
         self.holds_index.clear()
+
+        # Status to IDLE on reset
+        self.status = SimulationStatus.IDLE
 
         # Load blocks
         self.blocks = {}
@@ -266,7 +293,7 @@ class RailwaySimulator:
 
             if not found_free:
                 # No free block found — warn and fall back to index 0 (keeps demo runnable)
-                print(f"Warning: no free start block for train {cfg['id']}; placing at route[0] = {route[0]} (may overlap)")
+                print(f"Warning: no free start block for train {cfg['id']}; placing at route = {route} (may overlap)")
 
             start_block = route[start_index]
             priority = cfg["priority"]
@@ -281,12 +308,12 @@ class RailwaySimulator:
                 speed_kmh=speed,
             )
 
-            # Stagger entry for variety (seeded by caller for reproducibility)
-            enter_offset = random.randint(0, 40)
+            # Stagger entry for variety (seeded per-instance for reproducibility)
+            enter_offset = self._rng.randint(0, 40)
             t.entered_block_at = self.sim_time - timedelta(seconds=enter_offset)
             t.will_exit_at = self._compute_will_exit(t, start_block, t.entered_block_at)
             t.next_block = route[start_index + 1] if start_index < len(route) - 1 else None
-            t.delay_minutes = random.randint(0, 2)
+            t.delay_minutes = self._rng.randint(0, 2)
 
             self.trains[t.id] = t
             # Mark block as occupied (even if this overwrites — we warned above)
@@ -295,6 +322,10 @@ class RailwaySimulator:
     # --------------- Step ---------------
 
     def step(self) -> List[EventMessage]:
+        # Only advance when explicitly RUNNING
+        if self.status != SimulationStatus.RUNNING:
+            return []
+
         # If already completed, do not advance time or generate more moves
         if self.completed:
             return []
@@ -323,13 +354,14 @@ class RailwaySimulator:
         if not self.completed and self._is_completed():
             self.completed = True
 
-        # Emit one-shot completion event
+        # Emit one-shot completion event and transition to COMPLETED
         if self.completed and not self._completion_emitted:
             events.append(self._create_event(
                 EventKind.SIMULATION_COMPLETED,
                 note="All trains reached their final blocks"
             ))
             self._completion_emitted = True
+            self.status = SimulationStatus.COMPLETED
 
         return events
 
@@ -478,7 +510,7 @@ class RailwaySimulator:
         kpis = KPIMetrics(avg_delay_min=round(avg_delay, 1), trains_on_line=trains_on_line)
 
         # Status flag for lifecycle end
-        status = "COMPLETED" if self.completed else "RUNNING"
+        status = self.status.value
 
         return StateMessage(
             type="state",
@@ -560,3 +592,64 @@ class RailwaySimulator:
     def clear_plan(self):
         self.active_plan = None
         self.holds_index.clear()
+
+    # --------------- Batch helpers (A/B) ---------------
+
+    def run_to_completion(self, max_ticks: int = 100000) -> Dict[str, Any]:
+        """
+        Run this simulator instance from current state until completion or max_ticks.
+        Returns a metrics dict for convenient API responses.
+        """
+        # Ensure running
+        self.start()
+        while not self.completed and self.tick_count < max_ticks:
+            self.step()
+
+        return self.collect_metrics()
+
+    def collect_metrics(self) -> Dict[str, Any]:
+        """
+        Summarize KPIs and a few run details for reporting and diffs.
+        """
+        avg_delay = sum(t.delay_minutes for t in self.trains.values()) / max(1, len(self.trains))
+        total_delay = sum(t.delay_minutes for t in self.trains.values())
+        return {
+            "avg_delay_min": round(avg_delay, 1),
+            "total_delay_min": int(total_delay),
+            "trains_on_line": len(self.trains),
+            "ticks": self.tick_count,
+            "sim_time": iso(self.sim_time),
+            "completed": bool(self.completed),
+            "status": self.status.value,
+        }
+
+    @classmethod
+    def run_batch(cls, seed: Optional[int] = None, plan: Optional[Plan] = None, max_ticks: int = 100000) -> Dict[str, Any]:
+        """
+        Fire-and-forget batch run with optional plan using a fresh simulator,
+        ensuring deterministic seeding and isolation from live runs.
+        """
+        sim = cls(seed=seed)
+        sim.reset()
+        if plan is not None:
+            sim.apply_plan(plan)
+        return sim.run_to_completion(max_ticks=max_ticks)
+
+    @classmethod
+    def ab_compare(cls, plan: Plan, seed: Optional[int] = None, max_ticks: int = 100000) -> Dict[str, Any]:
+        """
+        Run baseline (no plan) and optimized (with plan) with the same seed and
+        return baseline, optimized, and diff metrics.
+        """
+        baseline = cls.run_batch(seed=seed, plan=None, max_ticks=max_ticks)
+        optimized = cls.run_batch(seed=seed, plan=plan, max_ticks=max_ticks)
+        diff = {
+            "avg_delay_min_delta": round(baseline["avg_delay_min"] - optimized["avg_delay_min"], 1),
+            "total_delay_min_delta": int(baseline["total_delay_min"] - optimized["total_delay_min"]),
+            "ticks_delta": int(baseline["ticks"] - optimized["ticks"]),
+        }
+        return {
+            "baseline": baseline,
+            "optimized": optimized,
+            "diff": diff,
+        }

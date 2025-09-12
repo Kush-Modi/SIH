@@ -1,25 +1,42 @@
+/* ---------- Card container ---------- */
 .control-panel {
-  background: #ffffff;
+  --cp-bg: #ffffff;
+  --cp-border: #e2e8f0;
+  --cp-text: #0f172a;
+  --cp-subtle: #334155;
+
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
   border-radius: 12px;
   padding: 16px;
-  box-shadow: 0 4px 10px rgba(2, 6, 23, 0.08);
+  border: 1px solid var(--cp-border);
+  box-shadow:
+    0 2px 6px rgba(2, 6, 23, 0.06),
+    0 12px 28px rgba(2, 6, 23, 0.08);
   max-height: 600px;
   overflow-y: auto;
+  color: var(--cp-text);
 }
+
+/* nicer scrollbar for long panels */
+.control-panel::-webkit-scrollbar { width: 10px; }
+.control-panel::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 10px; }
+.control-panel::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+.control-panel::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 .cp-title {
   margin: 0 0 12px 0;
-  color: #0f172a;
+  color: var(--cp-text);
   font-size: 16px;
   font-weight: 700;
 }
 
-/* Sections grouped with fieldset/legend for accessibility */
+/* ---------- Sections ---------- */
 .control-section {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--cp-border);
   border-radius: 10px;
   padding: 12px;
   margin-bottom: 14px;
+  background: #fff;
 }
 
 .control-section[disabled] { opacity: 0.6; }
@@ -28,11 +45,12 @@
   padding: 0 6px;
   font-size: 12px;
   font-weight: 700;
-  color: #334155;
+  color: var(--cp-subtle);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
+/* ---------- Layout ---------- */
 .control-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -40,8 +58,20 @@
   margin-bottom: 12px;
 }
 
-.control-group { display: flex; flex-direction: column; gap: 6px; }
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
+/* Compact inline groups for small controls (e.g., trials/seed) */
+.control-grid .control-group.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- Labels/Inputs ---------- */
 .control-label {
   color: #475569;
   font-size: 12px;
@@ -55,23 +85,33 @@
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   font-size: 14px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
   background: #fff;
+  color: #0f172a;
 }
 
-.control-group input:focus,
-.control-group select:focus {
+/* Accessible focus ring; show only for keyboard users */
+.control-group input:focus-visible,
+.control-group select:focus-visible {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28);
 }
 
-/* Remove spinners on number inputs */
+/* Keep mouse-focus subtle */
+.control-group input:focus:not(:focus-visible),
+.control-group select:focus:not(:focus-visible) {
+  box-shadow: none;
+  border-color: #3b82f6;
+}
+
 .control-group input[type="number"] { -moz-appearance: textfield; }
 .control-group input[type="number"]::-webkit-outer-spin-button,
 .control-group input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
-/* Buttons */
+.help { font-size: 11px; color: #64748b; }
+
+/* ---------- Buttons ---------- */
 .btn {
   padding: 10px 14px;
   border: none;
@@ -82,27 +122,62 @@
   transition: transform 0.06s ease, box-shadow 0.15s ease, background-color 0.15s ease;
   min-width: 140px;
   box-shadow: 0 1px 2px rgba(2, 6, 23, 0.06);
+  color: #ffffff;
 }
 
 .btn:active { transform: translateY(1px); }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.primary { background: #2563eb; color: #ffffff; }
+/* Keyboard-only focus ring on buttons */
+.btn:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.5);
+  outline-offset: 2px;
+}
+
+/* Variants */
+.primary { background: #2563eb; }
 .primary:hover:not(:disabled) { background: #1d4ed8; }
 
 .warn { background: #f59e0b; color: #111827; }
 .warn:hover:not(:disabled) { background: #d97706; color: #111827; }
 
-.success { background: #16a34a; color: #ffffff; }
+.success { background: #16a34a; }
 .success:hover:not(:disabled) { background: #15803d; }
 
-.danger { background: #dc2626; color: #ffffff; }
+.danger { background: #dc2626; }
 .danger:hover:not(:disabled) { background: #b91c1c; }
 
-.reset-button { background: #475569; color: #ffffff; }
+.reset-button { background: #475569; }
 .reset-button:hover:not(:disabled) { background: #334155; }
 
-/* Messages */
+/* ---------- Inline status chip ---------- */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.status-chip::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #9ca3af; /* default */
+}
+
+/* Map backend lifecycle to colors (works with data-status on the chip) */
+.status-chip[data-status="IDLE"]::before { background: #94a3b8; }
+.status-chip[data-status="RUNNING"]::before { background: #22c55e; }
+.status-chip[data-status="COMPLETED"]::before { background: #3b82f6; }
+
+/* ---------- Messages ---------- */
 .message {
   padding: 10px 12px;
   border-radius: 8px;
@@ -116,15 +191,16 @@
 .message.error   { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 .message.info    { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
 
-.help { font-size: 11px; color: #64748b; }
-
-/* Results card */
+/* ---------- Results card ---------- */
 .results-card {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   padding: 12px;
   margin-top: 10px;
+  box-shadow:
+    0 1px 2px rgba(2, 6, 23, 0.05),
+    0 6px 14px rgba(2, 6, 23, 0.06);
 }
 
 .results-row {
@@ -138,10 +214,27 @@
 .results-label { font-weight: 700; color: #334155; }
 .results-value { font-weight: 600; }
 
+/* CI badge style for optional meta chips */
+.results-value .ci-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+}
+
 .results-sub { margin-top: 8px; }
 .results-subtitle { font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 4px; }
 .results-list { margin: 0; padding-left: 16px; font-size: 13px; color: #0f172a; }
 
+/* ---------- Responsive ---------- */
 @media (min-width: 860px) {
   .control-grid { grid-template-columns: 1fr 1fr; }
+  /* Make the three-button row wrap nicely on wider panels */
+  .control-section .control-grid > .btn { justify-self: start; }
 }

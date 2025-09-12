@@ -1,10 +1,13 @@
 import useWebSocket from 'react-use-websocket';
-import { useEffect, useMemo, useState } from 'react';
-import { WebSocketMessage, ConnectionStatus } from '../types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { WebSocketMessage, ConnectionStatus, StateMessage } from '../types';
 
-// Resolve a working backend base by probing /health on candidates
-async function pickBackendBase(): Promise<string> {
-  const envBase = (import.meta as any).env?.VITE_API_URL as string | undefined;
+/**
+ * Resolve a working backend base by probing /health on candidates.
+ * Uses Vite env (VITE_API_URL) if present, then common localhost bases.
+ */
+export async function pickBackendBase(): Promise<string> {
+  const envBase = (import.meta as any).env?.VITE_API_URL as string | undefined; // Vite exposes VITE_* at import.meta.env
   const host = window.location.hostname || 'localhost';
   const candidates = [
     envBase,
@@ -22,9 +25,9 @@ async function pickBackendBase(): Promise<string> {
     } catch {}
   }
   return `http://${host}:8000`;
-}
+} [5][3]
 
-function toWsUrl(httpBase: string): string {
+export function toWsUrl(httpBase: string): string {
   try {
     const u = new URL(httpBase);
     u.protocol = u.protocol.startsWith('https') ? 'wss:' : 'ws:';
@@ -35,32 +38,71 @@ function toWsUrl(httpBase: string): string {
   } catch {
     return 'ws://localhost:8000/ws';
   }
-}
+} [3]
+
+/* ----------------------- Minimal REST client ----------------------- */
+
+export type ApiClient = {
+  start: () => Promise<Response>;
+  reset: () => Promise<Response>;
+  rerunOptimized: (seed?: number, force?: boolean) => Promise<Response>;
+  getState: () => Promise<Response>;
+};
+
+export function createApi(httpBase: string): ApiClient {
+  const base = httpBase.replace(/\/$/, '');
+  return {
+    start: () => fetch(base + '/start', { method: 'POST' }),
+    reset: () => fetch(base + '/reset', { method: 'POST' }),
+    rerunOptimized: (seed: number = 42, force: boolean = false) =>
+      fetch(base + `/rerun-optimized?seed=${encodeURIComponent(seed)}&force=${force ? 'true' : 'false'}`, { method: 'POST' }),
+    getState: () => fetch(base + '/state'),
+  };
+} [3]
+
+/* ----------------------- Hook ----------------------- */
 
 export interface UseWebSocketClient {
+  // streaming artifacts
   lastMessage: WebSocketMessage | null;
+  lastState: StateMessage | null;         // latest authoritative simulator state
   connectionStatus: ConnectionStatus;
   sendMessage: (message: any) => void;
+
+  // base + convenience REST
+  httpBase: string | null;
+  api: ApiClient | null;
+
+  // helpers that POST then optionally force-refresh one GET /state
+  startSimulation: (refresh?: boolean) => Promise<void>;
+  resetSimulation: (refresh?: boolean) => Promise<void>;
+  rerunOptimized: (seed?: number, force?: boolean) => Promise<Response>;
 }
 
 export function useWebSocketClient(): UseWebSocketClient {
+  const [httpBase, setHttpBase] = useState<string | null>(null);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
 
+  // keep last "state" frame separate from general lastMessage
+  const [lastState, setLastState] = useState<StateMessage | null>(null);
+  const [lastParsed, setLastParsed] = useState<WebSocketMessage | null>(null);
+
+  // resolve base once
   useEffect(() => {
     let mounted = true;
     pickBackendBase().then((base) => {
-      if (mounted) setWsUrl(toWsUrl(base));
+      if (!mounted) return;
+      setHttpBase(base);
+      setWsUrl(toWsUrl(base));
     });
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, []);
 
   const {
     lastMessage,
     readyState,
     sendMessage: sendRawMessage,
-    lastError
+    lastError,
   } = useWebSocket(wsUrl || 'ws://localhost:8000/ws', {
     onOpen: () => {
       console.log('WebSocket connected to:', wsUrl);
@@ -72,21 +114,30 @@ export function useWebSocketClient(): UseWebSocketClient {
       console.error('WebSocket error:', error);
     },
     onMessage: (event) => {
-      // avoid log spam but keep a breadcrumb
-      try { const obj = JSON.parse(event.data); console.debug('WS frame:', obj.type || 'unknown'); } catch {}
+      try {
+        const obj = JSON.parse(event.data) as WebSocketMessage;
+        setLastParsed(obj);
+        if (obj?.type === 'state') {
+          // only update lastState when a state frame arrives
+          setLastState(obj as unknown as StateMessage);
+        }
+      } catch (e) {
+        console.error('WS parse error:', e);
+      }
     },
-    shouldReconnect: () => true,
-    reconnectAttempts: 50,
-    reconnectInterval: 1500,
+    shouldReconnect: () => true,       // reconnect on close
+    reconnectAttempts: 50,             // avoid flapping during dev
+    reconnectInterval: 1500,           // snappier reconnects
     share: true,
-    retryOnError: true,
-  }, wsUrl ? true : false);
+    retryOnError: true,                // reconnect on error
+  }, wsUrl ? true : false);            // defer connect until URL resolved [2]
 
+  // MDN: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
   const connectionStatus: ConnectionStatus = {
-    connected: readyState === 1, // OPEN
-    reconnecting: readyState === 0, // CONNECTING
+    connected: readyState === 1,
+    reconnecting: readyState === 0,
     lastError: (lastError as any)?.message || null,
-  };
+  }; [4]
 
   const sendMessage = (message: any) => {
     if (readyState === 1) {
@@ -96,9 +147,43 @@ export function useWebSocketClient(): UseWebSocketClient {
     }
   };
 
-  // Parse the last message
-  let parsedMessage: WebSocketMessage | null = null;
-  if ((lastMessage as any)?.data) {
+  const api = useMemo(() => (httpBase ? createApi(httpBase) : null), [httpBase]);
+
+  // Helpers that POST then optionally GET /state once to force an immediate UI flip
+  const startSimulation = useCallback(async (refresh: boolean = true) => {
+    if (!api) return;
+    const r = await api.start();
+    if (!r.ok) throw new Error('start failed');
+    if (refresh) {
+      const s = await api.getState();
+      if (s.ok) {
+        const json = (await s.json()) as StateMessage;
+        setLastState(json);
+      }
+    }
+  }, [api]);
+
+  const resetSimulation = useCallback(async (refresh: boolean = true) => {
+    if (!api) return;
+    const r = await api.reset();
+    if (!r.ok) throw new Error('reset failed');
+    if (refresh) {
+      const s = await api.getState();
+      if (s.ok) {
+        const json = (await s.json()) as StateMessage;
+        setLastState(json);
+      }
+    }
+  }, [api]);
+
+  const rerunOptimized = useCallback(async (seed: number = 42, force: boolean = false) => {
+    if (!api) throw new Error('api not ready');
+    return api.rerunOptimized(seed, force);
+  }, [api]);
+
+  // Parse the raw lastMessage for consumers that still need it
+  let parsedMessage: WebSocketMessage | null = lastParsed;
+  if (!parsedMessage && (lastMessage as any)?.data) {
     try {
       parsedMessage = JSON.parse((lastMessage as any).data) as WebSocketMessage;
     } catch (error) {
@@ -108,7 +193,13 @@ export function useWebSocketClient(): UseWebSocketClient {
 
   return {
     lastMessage: parsedMessage,
+    lastState,
     connectionStatus,
-    sendMessage
+    sendMessage,
+    httpBase,
+    api,
+    startSimulation,
+    resetSimulation,
+    rerunOptimized,
   };
 }
